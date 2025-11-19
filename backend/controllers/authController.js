@@ -1,198 +1,122 @@
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const { User } = require('../config/database');
+/**
+ * FarmFlow v3 - Auth Controller
+ */
 
-// Generate JWT token
-const generateToken = (userId) => {
-  return jwt.sign({ id: userId }, process.env.JWT_SECRET || 'farmflow-secret-key', {
-    expiresIn: process.env.JWT_EXPIRE || '30d'
-  });
-};
+const { authService } = require('../services');
 
-// @desc    Register new user
-// @route   POST /api/v1/auth/register
-exports.register = async (req, res, next) => {
-  try {
-    const { email, password, firstName, lastName, farmName, phone } = req.body;
-    
-    // Check if user exists
-    const existingUser = await User.findOne({ where: { email } });
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email already registered'
-      });
+const authController = {
+  /**
+   * POST /auth/register
+   */
+  async register(req, res, next) {
+    try {
+      const result = await authService.register(req.body);
+      res.status(201).json(result);
+    } catch (error) {
+      next(error);
     }
-    
-    // Hash password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-    
-    // Create user
-    const user = await User.create({
-      email,
-      password: hashedPassword,
-      firstName,
-      lastName,
-      farmName,
-      phone
-    });
-    
-    // Generate token
-    const token = generateToken(user.id);
-    
-    res.status(201).json({
-      success: true,
-      data: {
-        user: {
-          id: user.id,
-          email: user.email,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          farmName: user.farmName,
-          role: user.role,
-          settings: user.settings
-        },
-        token
+  },
+
+  /**
+   * POST /auth/login
+   */
+  async login(req, res, next) {
+    try {
+      const { email, password } = req.body;
+      const result = await authService.login(email, password);
+      res.json(result);
+    } catch (error) {
+      if (error.message === 'Invalid credentials') {
+        return res.status(401).json({ error: error.message });
       }
-    });
-  } catch (error) {
-    next(error);
+      next(error);
+    }
+  },
+
+  /**
+   * POST /auth/refresh
+   */
+  async refresh(req, res, next) {
+    try {
+      const { refreshToken } = req.body;
+      const result = await authService.refreshToken(refreshToken);
+      res.json(result);
+    } catch (error) {
+      res.status(401).json({ error: error.message });
+    }
+  },
+
+  /**
+   * POST /auth/forgot-password
+   */
+  async forgotPassword(req, res, next) {
+    try {
+      const { email } = req.body;
+      const result = await authService.requestPasswordReset(email);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  /**
+   * POST /auth/reset-password
+   */
+  async resetPassword(req, res, next) {
+    try {
+      const { token, password } = req.body;
+      const result = await authService.resetPassword(token, password);
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  },
+
+  /**
+   * POST /auth/change-password
+   */
+  async changePassword(req, res, next) {
+    try {
+      const { currentPassword, newPassword } = req.body;
+      const result = await authService.changePassword(
+        req.userId, 
+        currentPassword, 
+        newPassword
+      );
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  },
+
+  /**
+   * GET /auth/me
+   */
+  async me(req, res, next) {
+    try {
+      const { User, AccountMember, Account } = require('../models');
+      
+      const user = await User.findByPk(req.userId, {
+        attributes: { exclude: ['password', 'passwordResetToken', 'passwordResetExpires'] }
+      });
+
+      const memberships = await AccountMember.findAll({
+        where: { userId: req.userId, isActive: true },
+        include: [{ model: Account, where: { isActive: true } }]
+      });
+
+      const accounts = memberships.map(m => ({
+        id: m.Account.id,
+        name: m.Account.name,
+        slug: m.Account.slug,
+        role: m.role
+      }));
+
+      res.json({ user, accounts });
+    } catch (error) {
+      next(error);
+    }
   }
 };
 
-// @desc    Login user
-// @route   POST /api/v1/auth/login
-exports.login = async (req, res, next) => {
-  try {
-    const { email, password } = req.body;
-    
-    // Find user
-    const user = await User.findOne({ where: { email } });
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials'
-      });
-    }
-    
-    // Check password
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials'
-      });
-    }
-    
-    // Check if active
-    if (!user.isActive) {
-      return res.status(401).json({
-        success: false,
-        message: 'Account is deactivated'
-      });
-    }
-    
-    // Generate token
-    const token = generateToken(user.id);
-    
-    res.json({
-      success: true,
-      data: {
-        user: {
-          id: user.id,
-          email: user.email,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          farmName: user.farmName,
-          role: user.role,
-          settings: user.settings
-        },
-        token
-      }
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// @desc    Get current user
-// @route   GET /api/v1/auth/me
-exports.getMe = async (req, res, next) => {
-  try {
-    const user = await User.findByPk(req.user.id, {
-      attributes: { exclude: ['password'] }
-    });
-    
-    res.json({
-      success: true,
-      data: user
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// @desc    Update profile
-// @route   PUT /api/v1/auth/profile
-exports.updateProfile = async (req, res, next) => {
-  try {
-    const { firstName, lastName, farmName, phone, settings } = req.body;
-    
-    const user = await User.findByPk(req.user.id);
-    
-    if (firstName) user.firstName = firstName;
-    if (lastName) user.lastName = lastName;
-    if (farmName) user.farmName = farmName;
-    if (phone) user.phone = phone;
-    if (settings) user.settings = { ...user.settings, ...settings };
-    
-    await user.save();
-    
-    res.json({
-      success: true,
-      data: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        farmName: user.farmName,
-        role: user.role,
-        settings: user.settings
-      }
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// @desc    Change password
-// @route   PUT /api/v1/auth/password
-exports.changePassword = async (req, res, next) => {
-  try {
-    const { currentPassword, newPassword } = req.body;
-    
-    const user = await User.findByPk(req.user.id);
-    
-    // Verify current password
-    const isMatch = await bcrypt.compare(currentPassword, user.password);
-    if (!isMatch) {
-      return res.status(400).json({
-        success: false,
-        message: 'Current password is incorrect'
-      });
-    }
-    
-    // Hash new password
-    const salt = await bcrypt.genSalt(10);
-    user.password = await bcrypt.hash(newPassword, salt);
-    await user.save();
-    
-    res.json({
-      success: true,
-      message: 'Password updated successfully'
-    });
-  } catch (error) {
-    next(error);
-  }
-};
+module.exports = authController;

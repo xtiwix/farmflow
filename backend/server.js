@@ -1,33 +1,37 @@
 /**
- * FarmFlow v2 - Main Server
- * Serves both API and Frontend
+ * FarmFlow v3 - Main Server
  */
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const morgan = require('morgan');
+const compression = require('compression');
 const rateLimit = require('express-rate-limit');
-const path = require('path');
+
+const routes = require('./routes');
+const { errorHandler, notFound, requestLogger } = require('./middleware');
 const { sequelize } = require('./models');
 
 const app = express();
+const PORT = process.env.PORT || 3000;
 
-// Security middleware - with relaxed CSP for frontend
-app.use(helmet({
-  contentSecurityPolicy: false,
-  crossOriginEmbedderPolicy: false
-}));
+// ============================================================
+// MIDDLEWARE
+// ============================================================
 
+// Security
+app.use(helmet());
 app.use(cors({
-  origin: '*',
+  origin: process.env.CORS_ORIGIN || '*',
   credentials: true
 }));
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 500
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: { error: 'Too many requests, please try again later' }
 });
 app.use('/api/', limiter);
 
@@ -35,58 +39,87 @@ app.use('/api/', limiter);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Logging
-if (process.env.NODE_ENV !== 'production') {
-  app.use(morgan('dev'));
+// Compression
+app.use(compression());
+
+// Request logging
+if (process.env.NODE_ENV !== 'test') {
+  app.use(requestLogger);
 }
 
-// Serve static frontend files
-app.use(express.static(path.join(__dirname, 'public')));
+// ============================================================
+// ROUTES
+// ============================================================
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-// API Routes
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/crops', require('./routes/crops'));
-app.use('/api/species', require('./routes/species'));
-app.use('/api/customers', require('./routes/customers'));
-app.use('/api/orders', require('./routes/orders'));
-app.use('/api/tasks', require('./routes/tasks'));
-app.use('/api/batches', require('./routes/batches'));
-app.use('/api/products', require('./routes/products'));
-
-// Serve frontend for all non-API routes
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-// Error handling
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ 
-    error: 'Internal Server Error',
-    message: process.env.NODE_ENV !== 'production' ? err.message : undefined
+  res.json({ 
+    status: 'healthy', 
+    version: '3.0.0',
+    timestamp: new Date().toISOString() 
   });
 });
 
-// Start server
-const PORT = process.env.PORT || 5000;
+// API routes
+app.use(routes);
+
+// Error handling
+app.use(notFound);
+app.use(errorHandler);
+
+// ============================================================
+// DATABASE & SERVER START
+// ============================================================
 
 const startServer = async () => {
   try {
+    // Test database connection
     await sequelize.authenticate();
     console.log('✅ Database connected');
-    
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`🚀 FarmFlow running at http://localhost:${PORT}`);
+
+    // Sync models (use migrations in production)
+    if (process.env.NODE_ENV === 'development') {
+      await sequelize.sync({ alter: true });
+      console.log('✅ Database synced');
+    }
+
+    // Start server
+    app.listen(PORT, () => {
+      console.log(`
+╔═══════════════════════════════════════════════════════╗
+║                                                       ║
+║   🌱 FarmFlow v3 API Server                           ║
+║                                                       ║
+║   Port: ${PORT}                                          ║
+║   Environment: ${process.env.NODE_ENV || 'development'}                       ║
+║                                                       ║
+║   Endpoints:                                          ║
+║   - Health: GET /health                               ║
+║   - Auth: POST /auth/login, /auth/register            ║
+║   - API: /api/* (requires auth + account context)     ║
+║                                                       ║
+╚═══════════════════════════════════════════════════════╝
+      `);
     });
   } catch (error) {
-    console.error('❌ Unable to start server:', error);
+    console.error('❌ Failed to start server:', error);
     process.exit(1);
   }
 };
 
+// Handle graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received. Shutting down...');
+  await sequelize.close();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('SIGINT received. Shutting down...');
+  await sequelize.close();
+  process.exit(0);
+});
+
 startServer();
+
+module.exports = app;
