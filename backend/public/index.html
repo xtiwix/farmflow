@@ -1,0 +1,1357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FarmFlow v2</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; }
+        .sidebar-item.active { background-color: rgb(22 163 74); color: white; }
+        .task-section { border-left: 4px solid; padding-left: 12px; margin-bottom: 16px; }
+        .task-soak { border-color: #3B82F6; }
+        .task-sow { border-color: #10B981; }
+        .task-uncover { border-color: #F59E0B; }
+        .task-harvest { border-color: #EF4444; }
+        .task-move_to_fruiting { border-color: #8B5CF6; }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+        const API_URL = '/api';
+
+        // API Helper
+        const api = {
+            token: localStorage.getItem('farmflow_token'),
+            setToken(t) { this.token = t; t ? localStorage.setItem('farmflow_token', t) : localStorage.removeItem('farmflow_token'); },
+            async req(endpoint, opts = {}) {
+                const headers = { 'Content-Type': 'application/json', ...opts.headers };
+                if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+                const res = await fetch(`${API_URL}${endpoint}`, { ...opts, headers });
+                if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || 'Request failed'); }
+                return res.json();
+            },
+            get: (e) => api.req(e),
+            post: (e, d) => api.req(e, { method: 'POST', body: JSON.stringify(d) }),
+            put: (e, d) => api.req(e, { method: 'PUT', body: JSON.stringify(d) }),
+            delete: (e) => api.req(e, { method: 'DELETE' })
+        };
+
+        // Date helpers
+        const formatDate = (d) => new Date(d).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+        const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r.toISOString().split('T')[0]; };
+        const getWeekDates = (d) => {
+            const date = new Date(d);
+            const day = date.getDay();
+            const start = new Date(date);
+            start.setDate(date.getDate() - day);
+            return Array.from({length: 7}, (_, i) => addDays(start, i));
+        };
+        const getMonthDates = (d) => {
+            const date = new Date(d);
+            const year = date.getFullYear();
+            const month = date.getMonth();
+            const firstDay = new Date(year, month, 1);
+            const lastDay = new Date(year, month + 1, 0);
+            const startDate = new Date(firstDay);
+            startDate.setDate(startDate.getDate() - firstDay.getDay());
+            const dates = [];
+            let current = new Date(startDate);
+            while (current <= lastDay || dates.length % 7 !== 0) {
+                dates.push(current.toISOString().split('T')[0]);
+                current = new Date(current);
+                current.setDate(current.getDate() + 1);
+            }
+            return dates;
+        };
+
+        // Modal Component
+        const Modal = ({ isOpen, onClose, title, children, wide }) => {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                    <div className={`bg-white rounded-xl shadow-xl ${wide ? 'max-w-3xl' : 'max-w-lg'} w-full max-h-[90vh] overflow-y-auto`}>
+                        <div className="flex justify-between items-center p-4 border-b sticky top-0 bg-white">
+                            <h3 className="text-lg font-semibold">{title}</h3>
+                            <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-xl">×</button>
+                        </div>
+                        <div className="p-4">{children}</div>
+                    </div>
+                </div>
+            );
+        };
+
+        // Login Page
+        const LoginPage = ({ onLogin }) => {
+            const [email, setEmail] = useState('admin@farmflow.com');
+            const [password, setPassword] = useState('farmflow123');
+            const [error, setError] = useState('');
+            const [loading, setLoading] = useState(false);
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                try {
+                    const data = await api.post('/auth/login', { email, password });
+                    api.setToken(data.token);
+                    onLogin(data.user);
+                } catch (err) { setError(err.message); } finally { setLoading(false); }
+            };
+            return (
+                <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-green-500 to-green-700">
+                    <div className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-md">
+                        <div className="text-center mb-8">
+                            <h1 className="text-3xl font-bold text-gray-800">🌱 FarmFlow</h1>
+                            <p className="text-gray-600 mt-2">Farm Management System</p>
+                        </div>
+                        {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg mb-4 text-sm">{error}</div>}
+                        <form onSubmit={handleSubmit}>
+                            <div className="mb-4">
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-2 border rounded-lg" required />
+                            </div>
+                            <div className="mb-6">
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-4 py-2 border rounded-lg" required />
+                            </div>
+                            <button type="submit" disabled={loading} className="w-full bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50">
+                                {loading ? 'Signing in...' : 'Sign In'}
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+        // Sidebar
+        const Sidebar = ({ currentPage, onNavigate, onLogout, user }) => {
+            const items = [
+                { id: 'dashboard', label: 'Dashboard', icon: '🏠' },
+                { id: 'tasks', label: 'Tasks', icon: '📅' },
+                { id: 'orders', label: 'Orders', icon: '📦' },
+                { id: 'crops', label: 'Microgreens', icon: '🌱' },
+                { id: 'species', label: 'Mushrooms', icon: '🍄' },
+                { id: 'customers', label: 'Customers', icon: '👥' },
+                { id: 'batches', label: 'Batches', icon: '📋' }
+            ];
+            return (
+                <div className="w-56 bg-gray-900 text-white min-h-screen flex flex-col">
+                    <div className="p-4 border-b border-gray-800">
+                        <h1 className="text-lg font-bold">🌱 FarmFlow</h1>
+                        <p className="text-gray-400 text-sm truncate">{user?.fullName}</p>
+                    </div>
+                    <nav className="flex-1 p-2">
+                        {items.map(item => (
+                            <button key={item.id} onClick={() => onNavigate(item.id)}
+                                className={`sidebar-item w-full flex items-center gap-3 px-3 py-2.5 rounded-lg mb-1 text-sm ${currentPage === item.id ? 'active' : 'hover:bg-gray-800'}`}>
+                                <span>{item.icon}</span>{item.label}
+                            </button>
+                        ))}
+                    </nav>
+                    <div className="p-2 border-t border-gray-800">
+                        <button onClick={onLogout} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-800 text-gray-400 text-sm">
+                            🚪 Sign Out
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        // Dashboard
+        const DashboardPage = ({ onNavigate }) => {
+            const [stats, setStats] = useState({ tasks: 0, orders: 0, batches: 0 });
+            useEffect(() => {
+                Promise.all([api.get('/tasks/today'), api.get('/orders/today'), api.get('/batches')])
+                    .then(([t, o, b]) => setStats({ tasks: t.length, orders: o.length, batches: b.length }))
+                    .catch(console.error);
+            }, []);
+            return (
+                <div className="p-6">
+                    <h2 className="text-2xl font-bold mb-6">Dashboard</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                        <div className="bg-white p-5 rounded-xl shadow-sm border cursor-pointer hover:shadow-md" onClick={() => onNavigate('tasks')}>
+                            <h3 className="text-gray-500 text-sm">Today's Tasks</h3>
+                            <p className="text-3xl font-bold mt-1">{stats.tasks}</p>
+                        </div>
+                        <div className="bg-white p-5 rounded-xl shadow-sm border cursor-pointer hover:shadow-md" onClick={() => onNavigate('orders')}>
+                            <h3 className="text-gray-500 text-sm">Today's Orders</h3>
+                            <p className="text-3xl font-bold mt-1">{stats.orders}</p>
+                        </div>
+                        <div className="bg-white p-5 rounded-xl shadow-sm border cursor-pointer hover:shadow-md" onClick={() => onNavigate('batches')}>
+                            <h3 className="text-gray-500 text-sm">Active Batches</h3>
+                            <p className="text-3xl font-bold mt-1">{stats.batches}</p>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // Tasks Page with Calendar View
+        const TasksPage = () => {
+            const [tasks, setTasks] = useState({});
+            const [loading, setLoading] = useState(true);
+            const [viewMode, setViewMode] = useState('day'); // day, week, month, list
+            const [currentDate, setCurrentDate] = useState(new Date().toISOString().split('T')[0]);
+            const [showAddModal, setShowAddModal] = useState(false);
+            const [taskForm, setTaskForm] = useState({ title: '', description: '', category: 'other', priority: 'medium', dueDate: currentDate });
+
+            const loadTasks = async () => {
+                setLoading(true);
+                let start, end;
+                if (viewMode === 'day') {
+                    start = end = currentDate;
+                } else if (viewMode === 'week') {
+                    const week = getWeekDates(currentDate);
+                    start = week[0];
+                    end = week[6];
+                } else if (viewMode === 'month') {
+                    const month = getMonthDates(currentDate);
+                    start = month[0];
+                    end = month[month.length - 1];
+                } else {
+                    start = addDays(new Date(), -7);
+                    end = addDays(new Date(), 30);
+                }
+                
+                try {
+                    const data = await api.get(`/tasks/calendar?start=${start}&end=${end}`);
+                    setTasks(data);
+                } catch (err) {
+                    console.error(err);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            useEffect(() => { loadTasks(); }, [currentDate, viewMode]);
+
+            const navigate = (dir) => {
+                const d = new Date(currentDate);
+                if (viewMode === 'day') d.setDate(d.getDate() + dir);
+                else if (viewMode === 'week') d.setDate(d.getDate() + (dir * 7));
+                else d.setMonth(d.getMonth() + dir);
+                setCurrentDate(d.toISOString().split('T')[0]);
+            };
+
+            const goToday = () => setCurrentDate(new Date().toISOString().split('T')[0]);
+
+            const completeTask = async (id) => {
+                await api.put(`/tasks/${id}/complete`);
+                loadTasks();
+            };
+
+            const addTask = async (e) => {
+                e.preventDefault();
+                await api.post('/tasks', taskForm);
+                setShowAddModal(false);
+                setTaskForm({ title: '', description: '', category: 'other', priority: 'medium', dueDate: currentDate });
+                loadTasks();
+            };
+
+            const taskTypeLabels = {
+                soak: { label: 'Soak', color: 'text-blue-600' },
+                sow: { label: 'Sow and Cover', color: 'text-green-600' },
+                uncover: { label: 'Uncover', color: 'text-yellow-600' },
+                harvest: { label: 'Harvest', color: 'text-red-600' },
+                move_to_fruiting: { label: 'Move to Fruiting', color: 'text-purple-600' },
+                other: { label: 'Other', color: 'text-gray-600' }
+            };
+
+            const renderTaskDetails = (task) => {
+                if (task.category === 'microgreens' && task.trayCount) {
+                    return (
+                        <table className="w-full text-xs mt-2 border-collapse">
+                            <thead>
+                                <tr className="border-b">
+                                    <th className="text-left py-1">Crop</th>
+                                    <th className="text-left py-1">Seed</th>
+                                    {task.taskType === 'soak' && <>
+                                        <th className="py-1">Rate (oz)</th>
+                                        <th className="py-1">Rate (g)</th>
+                                        <th className="py-1">Time</th>
+                                    </>}
+                                    {(task.taskType === 'sow' || task.taskType === 'uncover') && <>
+                                        <th className="py-1">Rate (oz)</th>
+                                        <th className="py-1">Rate (g)</th>
+                                    </>}
+                                    <th className="py-1">Trays</th>
+                                    <th className="py-1">Total (oz)</th>
+                                    <th className="py-1">Total (g)</th>
+                                    <th className="py-1">Harvest</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td className="py-1">{task.cropName}</td>
+                                    <td className="py-1">{task.seedType}</td>
+                                    {task.taskType === 'soak' && <>
+                                        <td className="py-1 text-center">{task.sowRateOzPerTray}</td>
+                                        <td className="py-1 text-center">{task.sowRateGPerTray}</td>
+                                        <td className="py-1 text-center">{task.soakTimeHours}h</td>
+                                    </>}
+                                    {(task.taskType === 'sow' || task.taskType === 'uncover') && <>
+                                        <td className="py-1 text-center">{task.sowRateOzPerTray}</td>
+                                        <td className="py-1 text-center">{task.sowRateGPerTray}</td>
+                                    </>}
+                                    <td className="py-1 text-center">{task.trayCount}</td>
+                                    <td className="py-1 text-center">{task.totalSeedWeightOz}</td>
+                                    <td className="py-1 text-center">{task.totalSeedWeightG?.toFixed(0)}</td>
+                                    <td className="py-1 text-center">{task.harvestDate ? formatDate(task.harvestDate) : '-'}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    );
+                } else if (task.category === 'mushrooms' && task.blockCount) {
+                    return (
+                        <div className="text-xs mt-1">
+                            <span className="font-medium">{task.speciesName}</span> • {task.blockCount} blocks • ~{task.expectedYieldLbs?.toFixed(1)} lbs
+                        </div>
+                    );
+                }
+                return task.description ? <p className="text-xs text-gray-500 mt-1">{task.description}</p> : null;
+            };
+
+            const renderDayView = (date) => {
+                const dayTasks = tasks[date] || {};
+                const taskTypes = Object.keys(dayTasks);
+                
+                if (taskTypes.length === 0) {
+                    return <p className="text-gray-400 text-sm">No tasks scheduled</p>;
+                }
+
+                return taskTypes.map(type => {
+                    const typeTasks = dayTasks[type];
+                    const typeInfo = taskTypeLabels[type] || taskTypeLabels.other;
+                    const totalTrays = typeTasks.reduce((sum, t) => sum + (parseFloat(t.trayCount) || 0), 0);
+                    
+                    return (
+                        <div key={type} className={`task-section task-${type}`}>
+                            <div className="flex justify-between items-center mb-2">
+                                <h3 className={`text-lg font-semibold ${typeInfo.color}`}>{typeInfo.label}</h3>
+                                {totalTrays > 0 && <span className="text-sm font-medium">Total Trays: {totalTrays}</span>}
+                            </div>
+                            <div className="bg-white rounded-lg shadow-sm border overflow-hidden">
+                                {typeTasks.map(task => (
+                                    <div key={task.id} className="p-3 border-b last:border-b-0 hover:bg-gray-50">
+                                        <div className="flex items-start gap-3">
+                                            <input 
+                                                type="checkbox" 
+                                                checked={task.status === 'completed'}
+                                                onChange={() => completeTask(task.id)}
+                                                className="mt-1"
+                                            />
+                                            <div className="flex-1">
+                                                <span className={task.status === 'completed' ? 'line-through text-gray-400' : 'font-medium'}>{task.title}</span>
+                                                {renderTaskDetails(task)}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    );
+                });
+            };
+
+            if (loading) return <div className="p-6">Loading tasks...</div>;
+
+            return (
+                <div className="p-6">
+                    <div className="flex justify-between items-center mb-4">
+                        <h2 className="text-2xl font-bold text-green-600">Tasks</h2>
+                        <button onClick={() => setShowAddModal(true)} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-700">+ Add Task</button>
+                    </div>
+
+                    {/* Controls */}
+                    <div className="flex items-center gap-4 mb-6 flex-wrap">
+                        <div className="bg-white px-4 py-2 rounded-lg border">
+                            {formatDate(currentDate)}
+                        </div>
+                        <select value={viewMode} onChange={e => setViewMode(e.target.value)} className="px-3 py-2 border rounded-lg">
+                            <option value="day">Day</option>
+                            <option value="week">Week</option>
+                            <option value="month">Month</option>
+                            <option value="list">List</option>
+                        </select>
+                        <div className="flex gap-1">
+                            <button onClick={() => navigate(-1)} className="px-3 py-2 border rounded-lg hover:bg-gray-50">‹</button>
+                            <button onClick={() => navigate(1)} className="px-3 py-2 border rounded-lg hover:bg-gray-50">›</button>
+                        </div>
+                        <button onClick={goToday} className="px-4 py-2 bg-gray-800 text-white rounded-lg text-sm">TODAY</button>
+                        <button className="px-4 py-2 border rounded-lg text-sm flex items-center gap-2">
+                            🔒 EXPORT PDF
+                        </button>
+                    </div>
+
+                    {/* View Content */}
+                    {viewMode === 'day' && renderDayView(currentDate)}
+                    
+                    {viewMode === 'week' && (
+                        <div className="grid grid-cols-7 gap-2">
+                            {getWeekDates(currentDate).map(date => (
+                                <div key={date} className="bg-white rounded-lg border p-2 min-h-[200px]">
+                                    <div className={`text-sm font-medium mb-2 ${date === new Date().toISOString().split('T')[0] ? 'text-green-600' : ''}`}>
+                                        {new Date(date).toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' })}
+                                    </div>
+                                    {tasks[date] && Object.entries(tasks[date]).map(([type, typeTasks]) => (
+                                        <div key={type} className="mb-1">
+                                            {typeTasks.map(t => (
+                                                <div key={t.id} className={`text-xs p-1 rounded mb-1 ${t.status === 'completed' ? 'bg-gray-100 line-through' : type === 'harvest' ? 'bg-red-100' : type === 'sow' ? 'bg-green-100' : type === 'soak' ? 'bg-blue-100' : 'bg-gray-100'}`}>
+                                                    {t.title.substring(0, 20)}...
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ))}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {viewMode === 'month' && (
+                        <div className="bg-white rounded-lg border overflow-hidden">
+                            <div className="grid grid-cols-7 border-b">
+                                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
+                                    <div key={d} className="p-2 text-center text-sm font-medium bg-gray-50">{d}</div>
+                                ))}
+                            </div>
+                            <div className="grid grid-cols-7">
+                                {getMonthDates(currentDate).map(date => {
+                                    const dayTasks = tasks[date] || {};
+                                    const taskCount = Object.values(dayTasks).flat().length;
+                                    return (
+                                        <div key={date} className={`p-2 border-b border-r min-h-[80px] ${new Date(date).getMonth() !== new Date(currentDate).getMonth() ? 'bg-gray-50' : ''}`}>
+                                            <div className="text-xs font-medium">{new Date(date).getDate()}</div>
+                                            {taskCount > 0 && (
+                                                <div className="text-xs mt-1 text-green-600 font-medium">{taskCount} tasks</div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+
+                    {viewMode === 'list' && (
+                        <div className="space-y-2">
+                            {Object.entries(tasks).sort().map(([date, dayTasks]) => (
+                                <div key={date} className="bg-white rounded-lg border p-3">
+                                    <h4 className="font-medium mb-2">{formatDate(date)}</h4>
+                                    {Object.entries(dayTasks).map(([type, typeTasks]) => (
+                                        typeTasks.map(t => (
+                                            <div key={t.id} className="flex items-center gap-2 py-1">
+                                                <input type="checkbox" checked={t.status === 'completed'} onChange={() => completeTask(t.id)} />
+                                                <span className={t.status === 'completed' ? 'line-through text-gray-400' : ''}>{t.title}</span>
+                                            </div>
+                                        ))
+                                    ))}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {/* Add Task Modal */}
+                    <Modal isOpen={showAddModal} onClose={() => setShowAddModal(false)} title="Add Task">
+                        <form onSubmit={addTask} className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Title *</label>
+                                <input value={taskForm.title} onChange={e => setTaskForm({...taskForm, title: e.target.value})} className="w-full px-3 py-2 border rounded-lg" required />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Description</label>
+                                <textarea value={taskForm.description} onChange={e => setTaskForm({...taskForm, description: e.target.value})} className="w-full px-3 py-2 border rounded-lg" rows="2" />
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Category</label>
+                                    <select value={taskForm.category} onChange={e => setTaskForm({...taskForm, category: e.target.value})} className="w-full px-3 py-2 border rounded-lg">
+                                        <option value="microgreens">Microgreens</option>
+                                        <option value="mushrooms">Mushrooms</option>
+                                        <option value="orders">Orders</option>
+                                        <option value="maintenance">Maintenance</option>
+                                        <option value="other">Other</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Due Date</label>
+                                    <input type="date" value={taskForm.dueDate} onChange={e => setTaskForm({...taskForm, dueDate: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                                </div>
+                            </div>
+                            <div className="flex gap-2">
+                                <button type="submit" className="bg-green-600 text-white px-4 py-2 rounded-lg">Save</button>
+                                <button type="button" onClick={() => setShowAddModal(false)} className="px-4 py-2 border rounded-lg">Cancel</button>
+                            </div>
+                        </form>
+                    </Modal>
+                </div>
+            );
+        };
+
+        // Orders Page - Continued in next part due to size
+        const OrdersPage = () => {
+            const [orders, setOrders] = useState([]);
+            const [customers, setCustomers] = useState([]);
+            const [products, setProducts] = useState([]);
+            const [tiers, setTiers] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [showModal, setShowModal] = useState(false);
+            const [showCustomerModal, setShowCustomerModal] = useState(false);
+            const [selected, setSelected] = useState([]);
+            const [editingOrder, setEditingOrder] = useState(null);
+            
+            const defaultForm = {
+                customerId: '',
+                dateType: 'harvest',
+                harvestDate: '',
+                startDate: '',
+                deliveryDate: '',
+                deliveryOffset: 0,
+                isRecurring: false,
+                recurringFrequency: 'weekly',
+                recurringEndDate: '',
+                notes: '',
+                items: [{ productId: '', quantity: 1, price: 0 }]
+            };
+            const [form, setForm] = useState(defaultForm);
+            const [customerForm, setCustomerForm] = useState({ name: '', email: '', phone: '', type: 'restaurant', priceTierId: '' });
+
+            const load = async () => {
+                const [o, c, p, t] = await Promise.all([
+                    api.get('/orders'),
+                    api.get('/customers'),
+                    api.get('/products'),
+                    api.get('/products/tiers/all')
+                ]);
+                setOrders(o);
+                setCustomers(c);
+                setProducts(p);
+                setTiers(t);
+                setLoading(false);
+            };
+
+            useEffect(() => { load(); }, []);
+
+            const calculateTotal = () => form.items.reduce((sum, i) => sum + (i.quantity * i.price), 0);
+
+            const handleProductChange = (index, productId) => {
+                const product = products.find(p => p.id === productId);
+                const customer = customers.find(c => c.id === form.customerId);
+                const items = [...form.items];
+                items[index].productId = productId;
+                // Get price based on customer tier
+                if (product && customer) {
+                    const priceRecord = product.ProductPrices?.find(pp => pp.tierId === customer.priceTierId);
+                    items[index].price = priceRecord ? parseFloat(priceRecord.price) : 0;
+                }
+                setForm({...form, items});
+            };
+
+            const addItem = () => setForm({...form, items: [...form.items, { productId: '', quantity: 1, price: 0 }]});
+            const removeItem = (i) => setForm({...form, items: form.items.filter((_, idx) => idx !== i)});
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                const payload = {
+                    ...form,
+                    items: form.items.filter(i => i.productId && i.quantity > 0)
+                };
+                
+                if (editingOrder) {
+                    await api.put(`/orders/${editingOrder.id}`, payload);
+                } else {
+                    await api.post('/orders', payload);
+                }
+                
+                setShowModal(false);
+                setForm(defaultForm);
+                setEditingOrder(null);
+                load();
+            };
+
+            const handleCustomerSubmit = async (e) => {
+                e.preventDefault();
+                const newCustomer = await api.post('/customers', customerForm);
+                setShowCustomerModal(false);
+                setCustomerForm({ name: '', email: '', phone: '', type: 'restaurant', priceTierId: '' });
+                await load();
+                setForm({...form, customerId: newCustomer.id});
+            };
+
+            const editOrder = async (order) => {
+                const fullOrder = await api.get(`/orders/${order.id}`);
+                setForm({
+                    customerId: fullOrder.customerId,
+                    dateType: fullOrder.dateType || 'harvest',
+                    harvestDate: fullOrder.harvestDate || '',
+                    startDate: fullOrder.startDate || '',
+                    deliveryDate: fullOrder.deliveryDate,
+                    deliveryOffset: fullOrder.deliveryOffset || 0,
+                    isRecurring: fullOrder.isRecurring || false,
+                    recurringFrequency: fullOrder.recurringFrequency || 'weekly',
+                    recurringEndDate: fullOrder.recurringEndDate || '',
+                    notes: fullOrder.notes || '',
+                    items: fullOrder.OrderItems?.map(i => ({
+                        productId: i.productId,
+                        quantity: i.quantity,
+                        price: parseFloat(i.unitPrice)
+                    })) || [{ productId: '', quantity: 1, price: 0 }]
+                });
+                setEditingOrder(fullOrder);
+                setShowModal(true);
+            };
+
+            const deleteOrder = async (id) => {
+                if (!confirm('Delete this order and all associated tasks?')) return;
+                await api.delete(`/orders/${id}`);
+                load();
+            };
+
+            const bulkDelete = async () => {
+                if (selected.length === 0) return;
+                if (!confirm(`Delete ${selected.length} orders and all associated tasks?`)) return;
+                await api.post('/orders/bulk-delete', { orderIds: selected });
+                setSelected([]);
+                load();
+            };
+
+            const toggleSelect = (id) => {
+                setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+            };
+
+            const toggleAll = () => {
+                setSelected(selected.length === orders.length ? [] : orders.map(o => o.id));
+            };
+
+            if (loading) return <div className="p-6">Loading...</div>;
+
+            return (
+                <div className="p-6">
+                    <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-2xl font-bold">Orders</h2>
+                        <div className="flex gap-2">
+                            {selected.length > 0 && (
+                                <button onClick={bulkDelete} className="bg-red-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-red-700">
+                                    Delete {selected.length}
+                                </button>
+                            )}
+                            <button onClick={() => { setForm(defaultForm); setEditingOrder(null); setShowModal(true); }} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-700">+ New Order</button>
+                        </div>
+                    </div>
+
+                    {orders.length === 0 ? (
+                        <div className="bg-white p-8 rounded-xl shadow-sm border text-center text-gray-500">No orders yet</div>
+                    ) : (
+                        <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+                            <table className="w-full text-sm">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="px-4 py-3 text-left">
+                                            <input type="checkbox" checked={selected.length === orders.length} onChange={toggleAll} />
+                                        </th>
+                                        <th className="px-4 py-3 text-left font-medium text-gray-600">Order #</th>
+                                        <th className="px-4 py-3 text-left font-medium text-gray-600">Customer</th>
+                                        <th className="px-4 py-3 text-left font-medium text-gray-600">Delivery</th>
+                                        <th className="px-4 py-3 text-left font-medium text-gray-600">Total</th>
+                                        <th className="px-4 py-3 text-left font-medium text-gray-600">Status</th>
+                                        <th className="px-4 py-3 text-left font-medium text-gray-600">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {orders.map(o => (
+                                        <tr key={o.id} className="border-t hover:bg-gray-50">
+                                            <td className="px-4 py-3">
+                                                <input type="checkbox" checked={selected.includes(o.id)} onChange={() => toggleSelect(o.id)} />
+                                            </td>
+                                            <td className="px-4 py-3 font-medium">{o.orderNumber}</td>
+                                            <td className="px-4 py-3">{o.Customer?.name}</td>
+                                            <td className="px-4 py-3">{formatDate(o.deliveryDate)}</td>
+                                            <td className="px-4 py-3">${parseFloat(o.total || 0).toFixed(2)}</td>
+                                            <td className="px-4 py-3">
+                                                <span className={`text-xs px-2 py-1 rounded ${o.status === 'delivered' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>{o.status}</span>
+                                            </td>
+                                            <td className="px-4 py-3">
+                                                <button onClick={() => editOrder(o)} className="text-blue-600 hover:text-blue-700 text-xs mr-2">Edit</button>
+                                                <button onClick={() => deleteOrder(o.id)} className="text-red-600 hover:text-red-700 text-xs">Delete</button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+
+                    {/* Order Modal */}
+                    <Modal isOpen={showModal} onClose={() => { setShowModal(false); setEditingOrder(null); }} title={editingOrder ? 'Edit Order' : 'Create Order'} wide>
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            {/* Customer */}
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Customer *</label>
+                                <div className="flex gap-2">
+                                    <select value={form.customerId} onChange={e => setForm({...form, customerId: e.target.value})} className="flex-1 px-3 py-2 border rounded-lg" required>
+                                        <option value="">Select customer</option>
+                                        {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                                    </select>
+                                    <button type="button" onClick={() => setShowCustomerModal(true)} className="px-3 py-2 border rounded-lg hover:bg-gray-50">+ New</button>
+                                </div>
+                            </div>
+
+                            {/* Date Type */}
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Date Type</label>
+                                    <select value={form.dateType} onChange={e => setForm({...form, dateType: e.target.value})} className="w-full px-3 py-2 border rounded-lg border-green-500">
+                                        <option value="harvest">Harvest Date</option>
+                                        <option value="start">Start Date</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">{form.dateType === 'harvest' ? 'Harvest Date' : 'Start Date'} *</label>
+                                    <input 
+                                        type="date" 
+                                        value={form.dateType === 'harvest' ? form.harvestDate : form.startDate}
+                                        onChange={e => setForm({...form, [form.dateType === 'harvest' ? 'harvestDate' : 'startDate']: e.target.value})}
+                                        className="w-full px-3 py-2 border rounded-lg" 
+                                        required 
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Delivery */}
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Delivery</label>
+                                <select value={form.deliveryOffset} onChange={e => setForm({...form, deliveryOffset: parseInt(e.target.value)})} className="w-full px-3 py-2 border rounded-lg">
+                                    <option value="0">On Harvest Day</option>
+                                    <option value="1">1 day before harvest</option>
+                                    <option value="2">2 days before harvest</option>
+                                    <option value="3">3 days before harvest</option>
+                                </select>
+                            </div>
+
+                            {/* Recurring */}
+                            <div className="bg-gray-50 p-3 rounded-lg">
+                                <label className="flex items-center gap-2">
+                                    <input type="checkbox" checked={form.isRecurring} onChange={e => setForm({...form, isRecurring: e.target.checked})} />
+                                    <span className="font-medium">Recurring</span>
+                                </label>
+                                {form.isRecurring && (
+                                    <div className="grid grid-cols-2 gap-4 mt-3">
+                                        <div>
+                                            <label className="block text-sm mb-1">Frequency</label>
+                                            <select value={form.recurringFrequency} onChange={e => setForm({...form, recurringFrequency: e.target.value})} className="w-full px-3 py-2 border rounded-lg">
+                                                <option value="weekly">Weekly</option>
+                                                <option value="biweekly">Bi-weekly</option>
+                                                <option value="monthly">Monthly</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm mb-1">End Date (optional)</label>
+                                            <input type="date" value={form.recurringEndDate} onChange={e => setForm({...form, recurringEndDate: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Products */}
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Products *</label>
+                                <table className="w-full text-sm border rounded-lg overflow-hidden">
+                                    <thead className="bg-gray-50">
+                                        <tr>
+                                            <th className="px-3 py-2 text-left">Product</th>
+                                            <th className="px-3 py-2 w-20">Qty</th>
+                                            <th className="px-3 py-2 w-24">Price</th>
+                                            <th className="px-3 py-2 w-24">Subtotal</th>
+                                            <th className="px-3 py-2 w-10"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {form.items.map((item, i) => (
+                                            <tr key={i} className="border-t">
+                                                <td className="px-3 py-2">
+                                                    <select value={item.productId} onChange={e => handleProductChange(i, e.target.value)} className="w-full px-2 py-1 border rounded">
+                                                        <option value="">Select product</option>
+                                                        {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                                                    </select>
+                                                </td>
+                                                <td className="px-3 py-2">
+                                                    <input type="number" value={item.quantity} onChange={e => {
+                                                        const items = [...form.items];
+                                                        items[i].quantity = parseInt(e.target.value) || 0;
+                                                        setForm({...form, items});
+                                                    }} className="w-full px-2 py-1 border rounded text-center" min="0" />
+                                                </td>
+                                                <td className="px-3 py-2">
+                                                    <div className="flex items-center">
+                                                        <span className="mr-1">$</span>
+                                                        <input type="number" step="0.01" value={item.price} onChange={e => {
+                                                            const items = [...form.items];
+                                                            items[i].price = parseFloat(e.target.value) || 0;
+                                                            setForm({...form, items});
+                                                        }} className="w-full px-2 py-1 border rounded" />
+                                                    </div>
+                                                </td>
+                                                <td className="px-3 py-2 text-right font-medium">${(item.quantity * item.price).toFixed(2)}</td>
+                                                <td className="px-3 py-2">
+                                                    {form.items.length > 1 && (
+                                                        <button type="button" onClick={() => removeItem(i)} className="text-red-500">×</button>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                        <tr className="border-t bg-gray-50">
+                                            <td colSpan="3" className="px-3 py-2 text-right font-medium">Total:</td>
+                                            <td className="px-3 py-2 text-right font-bold text-green-600">${calculateTotal().toFixed(2)}</td>
+                                            <td></td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                                <button type="button" onClick={addItem} className="mt-2 px-3 py-1 border rounded text-sm hover:bg-gray-50">+ Add Product</button>
+                            </div>
+
+                            {/* Notes */}
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Notes</label>
+                                <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} className="w-full px-3 py-2 border rounded-lg" rows="2" placeholder="Any special instructions..." />
+                            </div>
+
+                            <button type="submit" className="w-full bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700">
+                                {editingOrder ? 'Update Order' : `Create Order - $${calculateTotal().toFixed(2)}`}
+                            </button>
+                        </form>
+                    </Modal>
+
+                    {/* Add Customer Modal */}
+                    <Modal isOpen={showCustomerModal} onClose={() => setShowCustomerModal(false)} title="Add Customer">
+                        <form onSubmit={handleCustomerSubmit} className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Name *</label>
+                                <input value={customerForm.name} onChange={e => setCustomerForm({...customerForm, name: e.target.value})} className="w-full px-3 py-2 border rounded-lg" required />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Email</label>
+                                <input type="email" value={customerForm.email} onChange={e => setCustomerForm({...customerForm, email: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Phone</label>
+                                <input value={customerForm.phone} onChange={e => setCustomerForm({...customerForm, phone: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Price Tier</label>
+                                <select value={customerForm.priceTierId} onChange={e => setCustomerForm({...customerForm, priceTierId: e.target.value})} className="w-full px-3 py-2 border rounded-lg">
+                                    <option value="">Select tier...</option>
+                                    {tiers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                </select>
+                            </div>
+                            <div className="flex gap-2">
+                                <button type="submit" className="bg-green-600 text-white px-4 py-2 rounded-lg">Save</button>
+                                <button type="button" onClick={() => setShowCustomerModal(false)} className="px-4 py-2 border rounded-lg">Cancel</button>
+                            </div>
+                        </form>
+                    </Modal>
+                </div>
+            );
+        };
+
+        // Crops Page with CRUD
+        const CropsPage = () => {
+            const [crops, setCrops] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [showModal, setShowModal] = useState(false);
+            const [editing, setEditing] = useState(null);
+            const [form, setForm] = useState({ name: '', variety: '', defaultSowGrams: '', daysToHarvest: '', blackoutDays: '', expectedYieldGrams: '', soakHours: '', notes: '' });
+
+            const load = () => api.get('/crops').then(setCrops).finally(() => setLoading(false));
+            useEffect(() => { load(); }, []);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if (editing) {
+                    await api.put(`/crops/${editing.id}`, form);
+                } else {
+                    await api.post('/crops', form);
+                }
+                setShowModal(false);
+                setEditing(null);
+                setForm({ name: '', variety: '', defaultSowGrams: '', daysToHarvest: '', blackoutDays: '', expectedYieldGrams: '', soakHours: '', notes: '' });
+                load();
+            };
+
+            const edit = (crop) => {
+                setForm(crop);
+                setEditing(crop);
+                setShowModal(true);
+            };
+
+            const del = async (id) => {
+                if (!confirm('Delete this crop?')) return;
+                await api.delete(`/crops/${id}`);
+                load();
+            };
+
+            if (loading) return <div className="p-6">Loading...</div>;
+
+            return (
+                <div className="p-6">
+                    <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-2xl font-bold">Microgreen Crops</h2>
+                        <button onClick={() => { setForm({ name: '', variety: '', defaultSowGrams: '', daysToHarvest: '', blackoutDays: '', expectedYieldGrams: '', soakHours: '', notes: '' }); setEditing(null); setShowModal(true); }} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-700">+ Add Crop</button>
+                    </div>
+                    <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+                        <table className="w-full text-sm">
+                            <thead className="bg-gray-50">
+                                <tr>
+                                    <th className="px-4 py-3 text-left font-medium text-gray-600">Name</th>
+                                    <th className="px-4 py-3 text-left font-medium text-gray-600">Variety</th>
+                                    <th className="px-4 py-3 font-medium text-gray-600">Days</th>
+                                    <th className="px-4 py-3 font-medium text-gray-600">Blackout</th>
+                                    <th className="px-4 py-3 font-medium text-gray-600">Sow (g)</th>
+                                    <th className="px-4 py-3 font-medium text-gray-600">Yield (g)</th>
+                                    <th className="px-4 py-3 font-medium text-gray-600">Soak (h)</th>
+                                    <th className="px-4 py-3 font-medium text-gray-600">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {crops.map(c => (
+                                    <tr key={c.id} className="border-t hover:bg-gray-50">
+                                        <td className="px-4 py-3 font-medium">{c.name}</td>
+                                        <td className="px-4 py-3 text-gray-600">{c.variety}</td>
+                                        <td className="px-4 py-3 text-center">{c.daysToHarvest}</td>
+                                        <td className="px-4 py-3 text-center">{c.blackoutDays}</td>
+                                        <td className="px-4 py-3 text-center">{c.defaultSowGrams}</td>
+                                        <td className="px-4 py-3 text-center">{c.expectedYieldGrams}</td>
+                                        <td className="px-4 py-3 text-center">{c.soakHours}</td>
+                                        <td className="px-4 py-3">
+                                            <button onClick={() => edit(c)} className="text-blue-600 hover:text-blue-700 text-xs mr-2">Edit</button>
+                                            <button onClick={() => del(c.id)} className="text-red-600 hover:text-red-700 text-xs">Delete</button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                    <Modal isOpen={showModal} onClose={() => { setShowModal(false); setEditing(null); }} title={editing ? 'Edit Crop' : 'Add Crop'}>
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Name *</label>
+                                    <input value={form.name} onChange={e => setForm({...form, name: e.target.value})} className="w-full px-3 py-2 border rounded-lg" required />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Variety</label>
+                                    <input value={form.variety} onChange={e => setForm({...form, variety: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-3 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Days to Harvest *</label>
+                                    <input type="number" value={form.daysToHarvest} onChange={e => setForm({...form, daysToHarvest: e.target.value})} className="w-full px-3 py-2 border rounded-lg" required />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Blackout Days</label>
+                                    <input type="number" value={form.blackoutDays} onChange={e => setForm({...form, blackoutDays: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Soak Hours</label>
+                                    <input type="number" value={form.soakHours} onChange={e => setForm({...form, soakHours: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Default Sow (g)</label>
+                                    <input type="number" value={form.defaultSowGrams} onChange={e => setForm({...form, defaultSowGrams: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Expected Yield (g)</label>
+                                    <input type="number" value={form.expectedYieldGrams} onChange={e => setForm({...form, expectedYieldGrams: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Notes</label>
+                                <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} className="w-full px-3 py-2 border rounded-lg" rows="2" />
+                            </div>
+                            <div className="flex gap-2">
+                                <button type="submit" className="bg-green-600 text-white px-4 py-2 rounded-lg">Save</button>
+                                <button type="button" onClick={() => { setShowModal(false); setEditing(null); }} className="px-4 py-2 border rounded-lg">Cancel</button>
+                            </div>
+                        </form>
+                    </Modal>
+                </div>
+            );
+        };
+
+        // Species Page with CRUD
+        const SpeciesPage = () => {
+            const [species, setSpecies] = useState([]);
+            const [selected, setSelected] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [showModal, setShowModal] = useState(false);
+            const [editing, setEditing] = useState(null);
+            const [form, setForm] = useState({
+                name: '', scientificName: '', strainCode: '', group: '', substrate: "Master's mix",
+                moisturePercentMin: '', moisturePercentMax: '', incubationDaysMin: '', incubationDaysMax: '',
+                fruitingTempMin: '', fruitingTempMax: '', fruitingHumidityMin: '', fruitingHumidityMax: '',
+                daysToFirstHarvest: '', daysToFirstHarvestMax: '', yieldPerBlockLbsMin: '', yieldPerBlockLbsMax: '',
+                difficulty: 'Intermediate', initiationMethod: '', cultivationNotes: ''
+            });
+
+            const load = () => api.get('/species').then(setSpecies).finally(() => setLoading(false));
+            useEffect(() => { load(); }, []);
+
+            const viewDetails = async (id) => {
+                const data = await api.get(`/species/${id}/cultivation`);
+                setSelected(data);
+            };
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if (editing) {
+                    await api.put(`/species/${editing.id}`, form);
+                } else {
+                    await api.post('/species', form);
+                }
+                setShowModal(false);
+                setEditing(null);
+                load();
+            };
+
+            const edit = (s) => {
+                setForm(s);
+                setEditing(s);
+                setShowModal(true);
+            };
+
+            const del = async (id) => {
+                if (!confirm('Delete this species?')) return;
+                await api.delete(`/species/${id}`);
+                load();
+            };
+
+            if (loading) return <div className="p-6">Loading...</div>;
+
+            return (
+                <div className="p-6">
+                    <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-2xl font-bold">Mushroom Species</h2>
+                        <button onClick={() => { setEditing(null); setShowModal(true); }} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-700">+ Add Species</button>
+                    </div>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+                            <div className="max-h-[500px] overflow-y-auto">
+                                {species.map(s => (
+                                    <div key={s.id} className={`p-3 border-b cursor-pointer hover:bg-gray-50 ${selected?.basic?.id === s.id ? 'bg-green-50' : ''}`}>
+                                        <div className="flex justify-between items-start">
+                                            <div onClick={() => viewDetails(s.id)} className="flex-1">
+                                                <h3 className="font-medium">{s.name}</h3>
+                                                <p className="text-xs text-gray-500">{s.strainCode}</p>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <span className={`text-xs px-2 py-1 rounded ${s.difficulty === 'Beginner' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>{s.difficulty}</span>
+                                                <button onClick={() => edit(s)} className="text-blue-600 text-xs">Edit</button>
+                                                <button onClick={() => del(s.id)} className="text-red-600 text-xs">Del</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                        {selected && (
+                            <div className="bg-white rounded-xl shadow-sm border p-5">
+                                <h3 className="text-xl font-bold">{selected.basic.name}</h3>
+                                <p className="text-gray-500 text-sm mb-4">{selected.basic.strainCode}</p>
+                                <div className="space-y-3 text-sm">
+                                    <div><span className="font-medium">Substrate:</span> {selected.substrate.type}</div>
+                                    <div><span className="font-medium">Moisture:</span> {selected.substrate.moistureMin}-{selected.substrate.moistureMax}%</div>
+                                    <div><span className="font-medium">Incubation:</span> {selected.incubation.daysMin}-{selected.incubation.daysMax} days</div>
+                                    <div><span className="font-medium">Fruiting Temp:</span> {selected.fruiting.tempMin}-{selected.fruiting.tempMax}°F</div>
+                                    <div><span className="font-medium">Fruiting RH:</span> {selected.fruiting.humidityMin}-{selected.fruiting.humidityMax}%</div>
+                                    <div><span className="font-medium">Days to Harvest:</span> {selected.timing.daysToHarvestMin}-{selected.timing.daysToHarvestMax}</div>
+                                    <div><span className="font-medium">Yield:</span> {selected.yield.perBlockMin}-{selected.yield.perBlockMax} lbs/block</div>
+                                    {selected.technique.initiation && <div><span className="font-medium">Initiation:</span> {selected.technique.initiation}</div>}
+                                    {selected.notes.cultivation && <div className="text-gray-600 italic">{selected.notes.cultivation}</div>}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                    <Modal isOpen={showModal} onClose={() => { setShowModal(false); setEditing(null); }} title={editing ? 'Edit Species' : 'Add Species'} wide>
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div className="grid grid-cols-3 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Name *</label>
+                                    <input value={form.name} onChange={e => setForm({...form, name: e.target.value})} className="w-full px-3 py-2 border rounded-lg" required />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Strain Code *</label>
+                                    <input value={form.strainCode} onChange={e => setForm({...form, strainCode: e.target.value})} className="w-full px-3 py-2 border rounded-lg" required />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Difficulty</label>
+                                    <select value={form.difficulty} onChange={e => setForm({...form, difficulty: e.target.value})} className="w-full px-3 py-2 border rounded-lg">
+                                        <option value="Beginner">Beginner</option>
+                                        <option value="Intermediate">Intermediate</option>
+                                        <option value="Advanced">Advanced</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-4 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Incub Days Min</label>
+                                    <input type="number" value={form.incubationDaysMin} onChange={e => setForm({...form, incubationDaysMin: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Incub Days Max</label>
+                                    <input type="number" value={form.incubationDaysMax} onChange={e => setForm({...form, incubationDaysMax: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Fruit Temp Min</label>
+                                    <input type="number" value={form.fruitingTempMin} onChange={e => setForm({...form, fruitingTempMin: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Fruit Temp Max</label>
+                                    <input type="number" value={form.fruitingTempMax} onChange={e => setForm({...form, fruitingTempMax: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-4 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Days to Harvest</label>
+                                    <input type="number" value={form.daysToFirstHarvest} onChange={e => setForm({...form, daysToFirstHarvest: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Yield Min (lbs)</label>
+                                    <input type="number" step="0.1" value={form.yieldPerBlockLbsMin} onChange={e => setForm({...form, yieldPerBlockLbsMin: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Yield Max (lbs)</label>
+                                    <input type="number" step="0.1" value={form.yieldPerBlockLbsMax} onChange={e => setForm({...form, yieldPerBlockLbsMax: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">RH Min</label>
+                                    <input type="number" value={form.fruitingHumidityMin} onChange={e => setForm({...form, fruitingHumidityMin: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Initiation Method</label>
+                                <textarea value={form.initiationMethod} onChange={e => setForm({...form, initiationMethod: e.target.value})} className="w-full px-3 py-2 border rounded-lg" rows="2" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Cultivation Notes</label>
+                                <textarea value={form.cultivationNotes} onChange={e => setForm({...form, cultivationNotes: e.target.value})} className="w-full px-3 py-2 border rounded-lg" rows="2" />
+                            </div>
+                            <div className="flex gap-2">
+                                <button type="submit" className="bg-green-600 text-white px-4 py-2 rounded-lg">Save</button>
+                                <button type="button" onClick={() => { setShowModal(false); setEditing(null); }} className="px-4 py-2 border rounded-lg">Cancel</button>
+                            </div>
+                        </form>
+                    </Modal>
+                </div>
+            );
+        };
+
+        // Customers Page
+        const CustomersPage = () => {
+            const [customers, setCustomers] = useState([]);
+            const [tiers, setTiers] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [showModal, setShowModal] = useState(false);
+            const [form, setForm] = useState({ name: '', email: '', phone: '', type: 'restaurant', priceTierId: '', preferredDeliveryDay: '' });
+
+            const load = async () => {
+                const [c, t] = await Promise.all([api.get('/customers'), api.get('/products/tiers/all')]);
+                setCustomers(c);
+                setTiers(t);
+                setLoading(false);
+            };
+            useEffect(() => { load(); }, []);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                await api.post('/customers', form);
+                setShowModal(false);
+                setForm({ name: '', email: '', phone: '', type: 'restaurant', priceTierId: '', preferredDeliveryDay: '' });
+                load();
+            };
+
+            if (loading) return <div className="p-6">Loading...</div>;
+
+            return (
+                <div className="p-6">
+                    <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-2xl font-bold">Customers</h2>
+                        <button onClick={() => setShowModal(true)} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-700">+ Add Customer</button>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {customers.map(c => (
+                            <div key={c.id} className="bg-white p-4 rounded-xl shadow-sm border">
+                                <h3 className="font-medium">{c.name}</h3>
+                                <p className="text-sm text-gray-500 capitalize">{c.type}</p>
+                                {c.email && <p className="text-sm text-gray-600 mt-2">{c.email}</p>}
+                                {c.phone && <p className="text-sm text-gray-600">{c.phone}</p>}
+                                {c.preferredDeliveryDay && <p className="text-sm text-green-600 mt-1">Delivery: {c.preferredDeliveryDay}</p>}
+                                {c.PriceTier && <span className="inline-block mt-2 text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded">{c.PriceTier.name}</span>}
+                            </div>
+                        ))}
+                    </div>
+                    <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Add Customer">
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Name *</label>
+                                <input value={form.name} onChange={e => setForm({...form, name: e.target.value})} className="w-full px-3 py-2 border rounded-lg" required />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Email</label>
+                                <input type="email" value={form.email} onChange={e => setForm({...form, email: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Phone</label>
+                                <input value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Price Tier</label>
+                                <select value={form.priceTierId} onChange={e => setForm({...form, priceTierId: e.target.value})} className="w-full px-3 py-2 border rounded-lg">
+                                    <option value="">Select tier...</option>
+                                    {tiers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                </select>
+                            </div>
+                            <div className="flex gap-2">
+                                <button type="submit" className="bg-green-600 text-white px-4 py-2 rounded-lg">Save</button>
+                                <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 border rounded-lg">Cancel</button>
+                            </div>
+                        </form>
+                    </Modal>
+                </div>
+            );
+        };
+
+        // Batches Page
+        const BatchesPage = () => {
+            const [batches, setBatches] = useState([]);
+            const [species, setSpecies] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [showModal, setShowModal] = useState(false);
+            const [form, setForm] = useState({ speciesId: '', receivedDate: new Date().toISOString().split('T')[0], blockCount: 10 });
+
+            const load = async () => {
+                const [b, s] = await Promise.all([api.get('/batches'), api.get('/species')]);
+                setBatches(b);
+                setSpecies(s);
+                setLoading(false);
+            };
+            useEffect(() => { load(); }, []);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                await api.post('/batches', form);
+                setShowModal(false);
+                setForm({ speciesId: '', receivedDate: new Date().toISOString().split('T')[0], blockCount: 10 });
+                load();
+            };
+
+            const generateTasks = async (id) => {
+                const result = await api.post(`/tasks/generate/${id}`);
+                alert(result.message);
+            };
+
+            if (loading) return <div className="p-6">Loading...</div>;
+
+            return (
+                <div className="p-6">
+                    <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-2xl font-bold">Batches & Blocks</h2>
+                        <button onClick={() => setShowModal(true)} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-700">+ New Batch</button>
+                    </div>
+                    <div className="space-y-4">
+                        {batches.length === 0 ? (
+                            <div className="bg-white p-8 rounded-xl shadow-sm border text-center text-gray-500">No batches yet</div>
+                        ) : (
+                            batches.map(b => (
+                                <div key={b.id} className="bg-white p-4 rounded-xl shadow-sm border">
+                                    <div className="flex justify-between items-start">
+                                        <div>
+                                            <h3 className="font-medium">{b.batchCode}</h3>
+                                            <p className="text-sm text-gray-500">{b.MushroomSpecies?.name} ({b.MushroomSpecies?.strainCode})</p>
+                                        </div>
+                                        <button onClick={() => generateTasks(b.id)} className="text-sm bg-blue-100 text-blue-700 px-3 py-1 rounded hover:bg-blue-200">Generate Tasks</button>
+                                    </div>
+                                    <div className="mt-3 flex gap-6 text-sm">
+                                        <div><span className="text-gray-500">Received:</span> {b.receivedDate}</div>
+                                        <div><span className="text-gray-500">Blocks:</span> {b.blockCount}</div>
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                    <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="New Batch">
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Species *</label>
+                                <select value={form.speciesId} onChange={e => setForm({...form, speciesId: e.target.value})} className="w-full px-3 py-2 border rounded-lg" required>
+                                    <option value="">Select species...</option>
+                                    {species.map(s => <option key={s.id} value={s.id}>{s.strainCode} - {s.name}</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Received Date</label>
+                                <input type="date" value={form.receivedDate} onChange={e => setForm({...form, receivedDate: e.target.value})} className="w-full px-3 py-2 border rounded-lg" required />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Block Count</label>
+                                <input type="number" value={form.blockCount} onChange={e => setForm({...form, blockCount: parseInt(e.target.value)})} className="w-full px-3 py-2 border rounded-lg" min="1" required />
+                            </div>
+                            <div className="flex gap-2">
+                                <button type="submit" className="bg-green-600 text-white px-4 py-2 rounded-lg">Create Batch</button>
+                                <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 border rounded-lg">Cancel</button>
+                            </div>
+                        </form>
+                    </Modal>
+                </div>
+            );
+        };
+
+        // Main App
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [page, setPage] = useState('dashboard');
+            const [loading, setLoading] = useState(true);
+
+            useEffect(() => {
+                const token = localStorage.getItem('farmflow_token');
+                if (token) {
+                    api.setToken(token);
+                    api.get('/auth/me').then(setUser).catch(() => api.setToken(null)).finally(() => setLoading(false));
+                } else {
+                    setLoading(false);
+                }
+            }, []);
+
+            const logout = () => { api.setToken(null); setUser(null); };
+
+            if (loading) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
+            if (!user) return <LoginPage onLogin={setUser} />;
+
+            const renderPage = () => {
+                switch (page) {
+                    case 'dashboard': return <DashboardPage onNavigate={setPage} />;
+                    case 'tasks': return <TasksPage />;
+                    case 'orders': return <OrdersPage />;
+                    case 'crops': return <CropsPage />;
+                    case 'species': return <SpeciesPage />;
+                    case 'customers': return <CustomersPage />;
+                    case 'batches': return <BatchesPage />;
+                    default: return <DashboardPage onNavigate={setPage} />;
+                }
+            };
+
+            return (
+                <div className="flex min-h-screen">
+                    <Sidebar currentPage={page} onNavigate={setPage} onLogout={logout} user={user} />
+                    <main className="flex-1 overflow-auto">{renderPage()}</main>
+                </div>
+            );
+        };
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
